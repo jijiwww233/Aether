@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 32447)
+Total output lines: 3526
+
 import { AsyncLocalStorage } from "node:async_hooks";
 import { flushCompileCache } from "node:module";
 import * as fs from "node:fs/promises";
@@ -1015,6 +1018,15 @@ function developerRoleFallbackStreams(
 }
 
 function createAetherModel(config: ModelConfig): Model<string> {
+  // Some OpenAI-compatible relays send valid assistant chunks and then close
+  // the SSE stream without a final `finish_reason`.  Pi can treat that EOF as
+  // a normal stop when this compatibility flag is disabled.  This constructor
+  // is only used by Aether's custom provider path; built-in providers retain
+  // their catalog-provided compatibility settings below.
+  const compat = {
+    ...(config.provider_type === "openai_compatible" ? { supportsFinishReason: false } : {}),
+    ...(config.supports_developer_role === false ? { supportsDeveloperRole: false } : {}),
+  };
   return {
     id: config.model_id,
     name: config.model_id,
@@ -1033,9 +1045,7 @@ function createAetherModel(config: ModelConfig): Model<string> {
     contextWindow: config.context_window ?? 128000,
     maxTokens: config.max_tokens ?? 16384,
     headers: config.custom_headers,
-    ...(config.supports_developer_role === false
-      ? { compat: { supportsDeveloperRole: false } }
-      : {}),
+    ...(Object.keys(compat).length > 0 ? { compat } : {}),
   } as Model<string>;
 }
 
@@ -1722,272 +1732,7 @@ function allowedHostToolDefinitions(rawTools: unknown, platform: "android" | "io
     if (!AETHER_HOST_TOOL_NAMES.has(definition.name)) return false;
     if (platform === "ios") {
       return new Set([
-        "browser",
-        "aether_config_get",
-        "aether_config_set",
-        "aether_skill_manage",
-        "aether_extension_manage",
-        "aether_developer_manage",
-      ]).has(definition.name);
-    }
-    return true;
-  });
-}
-
-function requestAgentHostTool(
-  state: AgentSessionState,
-  definition: HostToolDefinition,
-  toolCallId: string,
-  args: unknown,
-  signal: AbortSignal | undefined,
-  onUpdate: ((partial: AgentToolResult<JsonObject>) => void) | undefined,
-): Promise<AgentToolResult<JsonObject>> {
-  const runRequestId = state.currentRequestId;
-  if (!runRequestId) throw new Error(`Host tool ${definition.name} was called outside an active turn.`);
-  const toolRequestId = `host-tool-${Date.now()}-${++hostToolCounter}`;
-  const startedAt = Date.now();
-  bridgeDebug("host_tool_request_sent", {
-    tool_request_id: toolRequestId,
-    tool_call_id: toolCallId,
-    tool_name: definition.name,
-    session_id: state.sessionId,
-    run_request_id: runRequestId,
-  });
-  return new Promise((resolve, reject) => {
-    const abort = () => {
-      if (!pendingHostToolRequests.delete(toolRequestId)) return;
-      bridgeDebug("host_tool_request_aborted", {
-        tool_request_id: toolRequestId,
-        tool_name: definition.name,
-        elapsed_ms: elapsedMillis(startedAt),
-      });
-      reject(new Error(`Host tool ${definition.name} was aborted.`));
-    };
-    signal?.addEventListener("abort", abort, { once: true });
-    pendingHostToolRequests.set(toolRequestId, {
-      sessionId: state.sessionId,
-      resolve: (result) => {
-        signal?.removeEventListener("abort", abort);
-        bridgeDebug("host_tool_request_resolved", {
-          tool_request_id: toolRequestId,
-          tool_name: definition.name,
-          elapsed_ms: elapsedMillis(startedAt),
-        });
-        resolve(result);
-      },
-      reject: (error) => {
-        signal?.removeEventListener("abort", abort);
-        bridgeDebug("host_tool_request_rejected", {
-          tool_request_id: toolRequestId,
-          tool_name: definition.name,
-          error: errorMessageWithCause(error),
-          elapsed_ms: elapsedMillis(startedAt),
-        });
-        reject(error);
-      },
-      onUpdate,
-    });
-    writeEvent(runRequestId, "host_tool_request", {
-      session_id: state.sessionId,
-      tool_request_id: toolRequestId,
-      tool_call_id: toolCallId,
-      tool_name: definition.name,
-      arguments: normalizeToolArguments(args),
-      arguments_json: JSON.stringify(normalizeToolArguments(args)),
-      execution_mode: definition.execution_mode ?? "parallel",
-    });
-  });
-}
-
-function createAgentHostToolDefinition(
-  state: AgentSessionState,
-  definition: HostToolDefinition,
-): ToolDefinition<any, any, any> {
-  return {
-    name: definition.name,
-    label: definition.name,
-    description: definition.description,
-    parameters: hostToolSchema(definition),
-    executionMode: definition.execution_mode,
-    execute: (toolCallId, args, signal, onUpdate) =>
-      requestAgentHostTool(state, definition, toolCallId, args, signal, onUpdate),
-  };
-}
-
-function requestRuntimeOperation(
-  state: AgentSessionState,
-  kind: string,
-  payload: JsonObject,
-  options: { signal?: AbortSignal; onChunk?: (chunk: Buffer) => void; input?: Buffer } = {},
-): Promise<JsonObject> {
-  const requestId = state.currentRequestId;
-  if (!requestId) throw new Error(`Runtime operation ${kind} was called outside an active turn.`);
-  const operationId = `runtime-op-${Date.now()}-${++runtimeOperationCounter}`;
-  const startedAt = Date.now();
-  bridgeDebug("runtime_op_request_sent", {
-    operation_id: operationId,
-    kind,
-    session_id: state.sessionId,
-    input_bytes: options.input?.length ?? 0,
-  });
-  return new Promise((resolve, reject) => {
-    const abort = () => {
-      if (!pendingRuntimeOperations.delete(operationId)) return;
-      bridgeDebug("runtime_op_aborted", {
-        operation_id: operationId,
-        kind,
-        elapsed_ms: elapsedMillis(startedAt),
-      });
-      writeEvent(requestId, "runtime_op_cancel", {
-        operation_id: operationId,
-        session_id: state.sessionId,
-        runtime: state.runtime,
-      });
-      reject(new Error(`Runtime operation ${kind} was aborted.`));
-    };
-    options.signal?.addEventListener("abort", abort, { once: true });
-    pendingRuntimeOperations.set(operationId, {
-      sessionId: state.sessionId,
-      onChunk: options.onChunk,
-      resolve: (result) => {
-        options.signal?.removeEventListener("abort", abort);
-        bridgeDebug("runtime_op_resolved", {
-          operation_id: operationId,
-          kind,
-          elapsed_ms: elapsedMillis(startedAt),
-        });
-        resolve(result);
-      },
-      reject: (error) => {
-        options.signal?.removeEventListener("abort", abort);
-        bridgeDebug("runtime_op_rejected", {
-          operation_id: operationId,
-          kind,
-          error: errorMessageWithCause(error),
-          elapsed_ms: elapsedMillis(startedAt),
-        });
-        reject(error);
-      },
-    });
-    const inputChunks = options.input
-      ? Array.from({ length: Math.ceil(options.input.length / RUNTIME_OPERATION_CHUNK_BYTES) }, (_, index) =>
-          options.input!.subarray(index * RUNTIME_OPERATION_CHUNK_BYTES, (index + 1) * RUNTIME_OPERATION_CHUNK_BYTES))
-      : [];
-    writeEvent(requestId, "runtime_op_request", {
-      operation_id: operationId,
-      session_id: state.sessionId,
-      runtime: state.runtime,
-      kind,
-      payload,
-      input_chunk_count: inputChunks.length,
-      input_byte_count: options.input?.length ?? 0,
-    });
-    inputChunks.forEach((chunk, sequence) => {
-      writeEvent(requestId, "runtime_op_chunk", {
-        operation_id: operationId,
-        session_id: state.sessionId,
-        runtime: state.runtime,
-        direction: "input",
-        sequence,
-        data_base64: chunk.toString("base64"),
-        final: sequence === inputChunks.length - 1,
-      });
-    });
-  });
-}
-
-function runtimeOperationChunk(payload: JsonObject): boolean {
-  const operationId = asString(payload.operation_id).trim();
-  const pending = pendingRuntimeOperations.get(operationId);
-  if (!pending) return false;
-  const encoded = asString(payload.data_base64).trim();
-  if (encoded) pending.onChunk?.(Buffer.from(encoded, "base64"));
-  return true;
-}
-
-function runtimeOperationResult(payload: JsonObject): boolean {
-  const operationId = asString(payload.operation_id).trim();
-  const pending = pendingRuntimeOperations.get(operationId);
-  if (!pending) {
-    bridgeDebug("runtime_op_result_orphaned", { operation_id: operationId });
-    return false;
-  }
-  pendingRuntimeOperations.delete(operationId);
-  bridgeDebug("runtime_op_result_received", {
-    operation_id: operationId,
-    ok: asBoolean(payload.ok, true),
-  });
-  if (!asBoolean(payload.ok, true)) {
-    pending.reject(new Error(asString(payload.error, "Runtime operation failed.")));
-  } else {
-    pending.resolve(asObject(payload.result));
-  }
-  return true;
-}
-
-function nodeTemporaryOutputPath(filePath: string): boolean {
-  const relative = path.relative(os.tmpdir(), filePath);
-  return !relative.startsWith(`..${path.sep}`) && relative !== ".." &&
-    path.basename(filePath).startsWith("pi-bash-");
-}
-
-function runtimePath(state: AgentSessionState, absolutePath: string): string {
-  if (state.runtime !== "termux" || nodeTemporaryOutputPath(absolutePath)) return absolutePath;
-  const relative = path.relative(state.workspaceDirectory, absolutePath);
-  if (relative === "" || (!relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))) {
-    return path.resolve(state.termuxWorkspaceDirectory, relative);
-  }
-  return absolutePath;
-}
-
-async function detectLocalImageMimeType(absolutePath: string): Promise<string | undefined> {
-  const handle = await fs.open(absolutePath, "r");
-  try {
-    const bytes = Buffer.alloc(16);
-    const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
-    const header = bytes.subarray(0, bytesRead);
-    if (header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
-    if (header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) return "image/jpeg";
-    if (header.subarray(0, 6).toString("ascii") === "GIF87a" || header.subarray(0, 6).toString("ascii") === "GIF89a") return "image/gif";
-    if (header.subarray(0, 2).toString("ascii") === "BM") return "image/bmp";
-    if (header.subarray(0, 4).toString("ascii") === "RIFF" && header.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
-    return undefined;
-  } finally {
-    await handle.close();
-  }
-}
-
-function termuxReadOperations(state: AgentSessionState): ReadOperations {
-  return {
-    access: async (absolutePath) => {
-      if (nodeTemporaryOutputPath(absolutePath)) {
-        await fs.access(absolutePath);
-        return;
-      }
-      await requestRuntimeOperation(state, "access", { path: absolutePath, mode: "read" });
-    },
-    readFile: async (absolutePath) => {
-      if (nodeTemporaryOutputPath(absolutePath)) return fs.readFile(absolutePath);
-      const chunks: Buffer[] = [];
-      const result = await requestRuntimeOperation(
-        state,
-        "readFile",
-        { path: absolutePath },
-        { onChunk: (chunk) => chunks.push(chunk) },
-      );
-      return chunks.length > 0
-        ? Buffer.concat(chunks)
-        : Buffer.from(asString(result.data_base64), "base64");
-    },
-    detectImageMimeType: async (absolutePath) => {
-      if (nodeTemporaryOutputPath(absolutePath)) return undefined;
-      const result = await requestRuntimeOperation(state, "detectMime", { path: absolutePath });
-      return asString(result.mime_type).trim() || undefined;
-    },
-  };
-}
-
-function termuxEditOperations(state: AgentSessionState): EditOperations {
+ …2447 tokens truncated…: EditOperations {
   const read = termuxReadOperations(state);
   return {
     access: read.access,

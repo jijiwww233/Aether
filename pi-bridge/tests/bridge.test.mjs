@@ -1687,7 +1687,10 @@ test("reconnects a failed provider stream without restarting the harness turn", 
         })}\n\n`,
       );
       if (requestCount === 1) {
-        response.end();
+        // A relay that cleanly reaches EOF without finish_reason is now a
+        // supported compatibility case. Use an actual transport interruption
+        // here so this test continues to cover retrying network failures.
+        response.destroy(new Error("simulated provider connection reset"));
         return;
       }
       response.write(
@@ -1741,7 +1744,7 @@ test("reconnects a failed provider stream without restarting the harness turn", 
           ),
       )
       .map((frame) => frame.event),
-    ["assistant_text_delta", "assistant_stream_reset", "assistant_retry", "assistant_text_delta"],
+    ["assistant_stream_reset", "assistant_retry", "assistant_text_delta"],
   );
 });
 
@@ -1782,7 +1785,7 @@ test("reports Pi AgentSession retry errors", async () => {
   assert.notEqual(retry.payload.error_message.trim(), "");
 });
 
-test("maps a custom OpenAI-compatible provider through Pi", async (t) => {
+test("accepts normal EOF without finish_reason for a custom OpenAI-compatible provider", async (t) => {
   let receivedRequest;
   const server = createServer((request, response) => {
     const chunks = [];
@@ -1810,20 +1813,8 @@ test("maps a custom OpenAI-compatible provider through Pi", async (t) => {
           ],
         })}\n\n`,
       );
-      response.write(
-        `data: ${JSON.stringify({
-          id: "chatcmpl-pi-test",
-          object: "chat.completion.chunk",
-          created: 1,
-          model: "custom-model",
-          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-          usage: {
-            prompt_tokens: 4,
-            completion_tokens: 2,
-            total_tokens: 6,
-          },
-        })}\n\n`,
-      );
+      // This deliberately mirrors relays that send assistant content and a
+      // normal SSE terminator, but never provide a finish_reason chunk.
       response.end("data: [DONE]\n\n");
     });
   });
@@ -1859,6 +1850,19 @@ test("maps a custom OpenAI-compatible provider through Pi", async (t) => {
   assert.equal(receivedRequest.authorization, "Bearer secret-key");
   assert.equal(receivedRequest.customHeader, "present");
   assert.equal(receivedRequest.body.model, "custom-model");
+});
+
+test("does not apply the missing finish_reason compatibility to built-in providers", async () => {
+  const bridgeSource = await readFile(new URL("../src/bridge.ts", import.meta.url), "utf8");
+  const builtInBranchStart = bridgeSource.indexOf('if (config.provider_type === "builtin")');
+  const customBranchStart = bridgeSource.indexOf("  const models = createModels();", builtInBranchStart);
+
+  assert.ok(builtInBranchStart >= 0);
+  assert.ok(customBranchStart > builtInBranchStart);
+  assert.doesNotMatch(
+    bridgeSource.slice(builtInBranchStart, customBranchStart),
+    /supportsFinishReason/,
+  );
 });
 
 test("falls back from developer to system only for a structured role rejection", async (t) => {
