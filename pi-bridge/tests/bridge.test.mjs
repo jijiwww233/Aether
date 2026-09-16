@@ -1958,6 +1958,57 @@ test("does not apply the missing finish_reason compatibility to built-in provide
   );
 });
 
+test("normalizes a non-stream JSON completion without logging its text", async (t) => {
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        id: "chatcmpl-non-stream",
+        object: "chat.completion",
+        model: "manual-model",
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: "PRIVATE_NON_STREAM_TEXT" },
+          finish_reason: "stop",
+        }],
+      }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const client = new BridgeClient();
+  const result = await client.request(
+    "custom-non-stream-shape",
+    "complete_once",
+    {
+      model_config: {
+        provider_type: "custom",
+        provider_config_id: "non-stream-shape",
+        pi_provider_id: "aether-non-stream-shape",
+        pi_api: "openai-completions",
+        model_id: "manual-model",
+        base_url: `http://127.0.0.1:${address.port}/v1`,
+        api_key: "secret-key",
+        reasoning: false,
+      },
+      system_prompt: "Reply briefly.",
+      messages: [userMessage("hello")],
+      stream: false,
+    },
+  );
+
+  assert.equal(result.assistant_text, "PRIVATE_NON_STREAM_TEXT", JSON.stringify(result));
+  assert.match(client.stderr, /openai_sse_shape/);
+  assert.match(client.stderr, /openai_non_stream_completion_normalized/);
+  assert.match(client.stderr, /response_mime.*application\/json/);
+  assert.match(client.stderr, /text_chars.*23/);
+  assert.doesNotMatch(client.stderr, /PRIVATE_NON_STREAM_TEXT/);
+});
+
 test("falls back from developer to system only for a structured role rejection", async (t) => {
   const receivedRoles = [];
   const server = createServer((request, response) => {
