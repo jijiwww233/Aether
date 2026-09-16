@@ -71,6 +71,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Chat
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Cloud
@@ -323,6 +324,7 @@ fun ConversationScreen(
     availableMcpServers: List<McpServerConfig>,
     selectedSkillIds: List<String>,
     selectedMcpServerIds: List<String>,
+    conversationMode: ConversationMode,
     agentModeAvailable: Boolean,
     agentModeSelected: Boolean,
     agentModeDisplayState: AgentModeDisplayState,
@@ -341,6 +343,7 @@ fun ConversationScreen(
     onRemoveDraftAttachment: (String) -> Unit,
     onSetSkillSelected: (String, Boolean) -> Unit,
     onSetMcpServerSelected: (String, Boolean) -> Unit,
+    onSetConversationMode: (ConversationMode) -> Unit,
     onSetAgentModeSelected: (Boolean) -> Unit,
     onSetChromeSelected: (Boolean) -> Unit,
     onCancelEdit: () -> Unit,
@@ -779,6 +782,7 @@ fun ConversationScreen(
                 availableMcpServers = availableMcpServers,
                 selectedSkillIds = selectedSkillIds,
                 selectedMcpServerIds = selectedMcpServerIds,
+                conversationMode = conversationMode,
                 agentModeAvailable = agentModeAvailable,
                 agentModeSelected = agentModeSelected,
                 chromeAvailable = chromeAvailable,
@@ -793,6 +797,7 @@ fun ConversationScreen(
                 onRemoveAttachment = onRemoveDraftAttachment,
                 onSetSkillSelected = onSetSkillSelected,
                 onSetMcpServerSelected = onSetMcpServerSelected,
+                onSetConversationMode = onSetConversationMode,
                 onSetAgentModeSelected = onSetAgentModeSelected,
                 onSetChromeSelected = onSetChromeSelected,
                 onCancelEdit = onCancelEdit,
@@ -2268,6 +2273,7 @@ private fun ConversationComposerOverlay(
     availableMcpServers: List<McpServerConfig>,
     selectedSkillIds: List<String>,
     selectedMcpServerIds: List<String>,
+    conversationMode: ConversationMode,
     agentModeAvailable: Boolean,
     agentModeSelected: Boolean,
     chromeAvailable: Boolean,
@@ -2282,6 +2288,7 @@ private fun ConversationComposerOverlay(
     onRemoveAttachment: (String) -> Unit,
     onSetSkillSelected: (String, Boolean) -> Unit,
     onSetMcpServerSelected: (String, Boolean) -> Unit,
+    onSetConversationMode: (ConversationMode) -> Unit,
     onSetAgentModeSelected: (Boolean) -> Unit,
     onSetChromeSelected: (Boolean) -> Unit,
     onCancelEdit: () -> Unit,
@@ -2334,6 +2341,7 @@ private fun ConversationComposerOverlay(
                     availableMcpServers = availableMcpServers,
                     selectedSkillIds = selectedSkillIds,
                     selectedMcpServerIds = selectedMcpServerIds,
+                    conversationMode = conversationMode,
                     agentModeAvailable = agentModeAvailable,
                     agentModeSelected = agentModeSelected,
                     chromeAvailable = chromeAvailable,
@@ -2348,6 +2356,7 @@ private fun ConversationComposerOverlay(
                     onRemoveAttachment = onRemoveAttachment,
                     onSetSkillSelected = onSetSkillSelected,
                     onSetMcpServerSelected = onSetMcpServerSelected,
+                    onSetConversationMode = onSetConversationMode,
                     onSetAgentModeSelected = onSetAgentModeSelected,
                     onSetChromeSelected = onSetChromeSelected,
                     onCancelEdit = onCancelEdit,
@@ -2383,6 +2392,7 @@ private fun ConversationComposerBar(
     availableMcpServers: List<McpServerConfig>,
     selectedSkillIds: List<String>,
     selectedMcpServerIds: List<String>,
+    conversationMode: ConversationMode,
     agentModeAvailable: Boolean,
     agentModeSelected: Boolean,
     chromeAvailable: Boolean,
@@ -2397,6 +2407,7 @@ private fun ConversationComposerBar(
     onRemoveAttachment: (String) -> Unit,
     onSetSkillSelected: (String, Boolean) -> Unit,
     onSetMcpServerSelected: (String, Boolean) -> Unit,
+    onSetConversationMode: (ConversationMode) -> Unit,
     onSetAgentModeSelected: (Boolean) -> Unit,
     onSetChromeSelected: (Boolean) -> Unit,
     onCancelEdit: () -> Unit,
@@ -2446,15 +2457,8 @@ private fun ConversationComposerBar(
             agentModeSelected ||
             chromeSelected
     val extensionUiController = LocalAetherExtensionUiController.current
-    val hasExtensionActionTray =
-        extensionUiController
-            ?.snapshot
-            ?.componentsAt(AetherExtensionComponentChatComposerActionTray)
-            ?.isNotEmpty() == true ||
-            extensionUiController
-                ?.nativeComponents
-                ?.any { it.target == AetherExtensionComponentChatComposerActionTray } == true
-    val hasComposerActionTray = hasSelectedActions || hasExtensionActionTray
+    // The persistent mode chip makes the active transport visible before opening the menu.
+    val hasComposerActionTray = true
     val composerPlaceholder = when {
         value.isNotBlank() -> ""
         attachments.isNotEmpty() -> stringResource(R.string.chat_add_note)
@@ -2698,10 +2702,12 @@ private fun ConversationComposerBar(
                                 modifier = Modifier.fillMaxWidth(),
                                 skills = selectedSkillActions,
                                 mcpServers = selectedMcpActions,
+                                conversationMode = conversationMode,
                                 agentModeSelected = agentModeSelected,
                                 chromeSelected = chromeSelected,
                                 onRemoveSkill = { skillId -> onSetSkillSelected(skillId, false) },
                                 onRemoveMcpServer = { serverId -> onSetMcpServerSelected(serverId, false) },
+                                onSetConversationMode = onSetConversationMode,
                                 onRemoveAgentMode = { onSetAgentModeSelected(false) },
                                 onRemoveChrome = { onSetChromeSelected(false) },
                             )
@@ -2929,10 +2935,35 @@ private fun ConversationComposerBar(
                                             runAfterAttachmentMenuDismiss(onPickFiles)
                                         },
                                     )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    ComposerPlusMenuRow(
+                                        title = stringResource(R.string.conversation_mode_chat),
+                                        icon = Icons.Rounded.Chat,
+                                        selected = conversationMode == ConversationMode.Chat,
+                                        iconTint = Color(0xFF2F6DA3),
+                                        iconContainerColor = AetherSurfaceHigh,
+                                        onClick = {
+                                            runAfterAttachmentMenuDismiss {
+                                                onSetConversationMode(ConversationMode.Chat)
+                                            }
+                                        },
+                                    )
+                                    ComposerPlusMenuRow(
+                                        title = stringResource(R.string.conversation_mode_agent),
+                                        icon = LucideIcons.MousePointer2,
+                                        selected = conversationMode == ConversationMode.Agent,
+                                        iconTint = Color(0xFF6D5CFF),
+                                        iconContainerColor = AetherSurfaceHigh,
+                                        onClick = {
+                                            runAfterAttachmentMenuDismiss {
+                                                onSetConversationMode(ConversationMode.Agent)
+                                            }
+                                        },
+                                    )
                                     if (agentModeAvailable || chromeAvailable || availableSkills.isNotEmpty() || availableMcpServers.isNotEmpty()) {
                                         Spacer(modifier = Modifier.height(6.dp))
                                     }
-                                    if (agentModeAvailable) {
+                                    if (conversationMode == ConversationMode.Agent && agentModeAvailable) {
                                         ComposerPlusMenuRow(
                                             title = stringResource(R.string.agent_mode_label),
                                             icon = LucideIcons.MousePointer2,
@@ -2946,7 +2977,7 @@ private fun ConversationComposerBar(
                                             },
                                         )
                                     }
-                                    if (chromeAvailable) {
+                                    if (conversationMode == ConversationMode.Agent && chromeAvailable) {
                                         ComposerPlusMenuRow(
                                             title = stringResource(R.string.chrome_label),
                                             icon = Icons.Rounded.Public,
@@ -3089,10 +3120,12 @@ private fun ComposerActionTray(
     modifier: Modifier = Modifier,
     skills: List<InstalledSkill>,
     mcpServers: List<McpServerConfig>,
+    conversationMode: ConversationMode,
     agentModeSelected: Boolean,
     chromeSelected: Boolean,
     onRemoveSkill: (String) -> Unit,
     onRemoveMcpServer: (String) -> Unit,
+    onSetConversationMode: (ConversationMode) -> Unit,
     onRemoveAgentMode: () -> Unit,
     onRemoveChrome: () -> Unit,
 ) {
@@ -3103,6 +3136,14 @@ private fun ComposerActionTray(
             .padding(end = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        ComposerConversationModeChip(
+            mode = conversationMode,
+            onClick = {
+                onSetConversationMode(
+                    if (conversationMode == ConversationMode.Chat) ConversationMode.Agent else ConversationMode.Chat,
+                )
+            },
+        )
         if (agentModeSelected) {
             ComposerActionChip(
                 label = stringResource(R.string.agent_mode_label),
@@ -3136,6 +3177,37 @@ private fun ComposerActionTray(
                 onRemove = { onRemoveMcpServer(server.id) },
             )
         }
+    }
+}
+
+@Composable
+private fun ComposerConversationModeChip(
+    mode: ConversationMode,
+    onClick: () -> Unit,
+) {
+    val isChat = mode == ConversationMode.Chat
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (isChat) Color(0xFFE8F1FF) else Color(0xFFF0EAFF))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = if (isChat) Icons.Rounded.Chat else LucideIcons.MousePointer2,
+            contentDescription = null,
+            tint = if (isChat) Color(0xFF2F6DA3) else Color(0xFF6D5CFF),
+            modifier = Modifier.size(16.dp),
+        )
+        Text(
+            text = stringResource(
+                if (isChat) R.string.conversation_mode_chat else R.string.conversation_mode_agent,
+            ),
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium),
+            color = if (isChat) Color(0xFF2E6FD5) else Color(0xFF5A49C9),
+        )
     }
 }
 
