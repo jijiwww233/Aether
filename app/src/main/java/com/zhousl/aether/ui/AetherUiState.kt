@@ -29,6 +29,24 @@ enum class AppScreen {
     Settings,
 }
 
+/**
+ * Selects the transport used for a conversation. Chat deliberately bypasses
+ * Pi's coding-agent harness; Agent preserves the existing tool-enabled flow.
+ */
+enum class ConversationMode {
+    Chat,
+    Agent;
+
+    val storageValue: String
+        get() = name.lowercase()
+
+    companion object {
+        fun fromStored(value: String): ConversationMode = entries.firstOrNull {
+            it.storageValue == value.trim().lowercase()
+        } ?: Agent
+    }
+}
+
 enum class OnboardingStep {
     Landing,
     ProviderSetup,
@@ -234,6 +252,7 @@ data class ChatSession(
     val selectedSkillIds: List<String> = emptyList(),
     val activeSkills: List<ActiveSkillContext> = emptyList(),
     val activeMcpServerIds: List<String> = emptyList(),
+    val conversationMode: ConversationMode = ConversationMode.Chat,
     val agentModeEnabled: Boolean = false,
     val chromeEnabled: Boolean = false,
     val selectedModelKey: String = "",
@@ -262,6 +281,7 @@ data class AetherUiState(
     val draftSelectedModelKey: String = "",
     val draftSelectedSkillIds: List<String> = emptyList(),
     val draftSelectedMcpServerIds: List<String> = emptyList(),
+    val draftConversationMode: ConversationMode = ConversationMode.Chat,
     val draftAgentModeEnabled: Boolean = false,
     val draftChromeEnabled: Boolean = false,
     val draftWorkspaceId: String? = null,
