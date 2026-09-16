@@ -595,6 +595,176 @@ function fetchWithDetailedErrors(
 
 globalThis.fetch = fetchWithDetailedErrors(globalThis.fetch.bind(globalThis));
 
+type OpenAiSseDeltaShape = {
+  fields: string[];
+  text_kind?: string;
+  text_chars?: number;
+  reasoning_kind?: string;
+  reasoning_chars?: number;
+  tool_call_count?: number;
+};
+
+function valueKind(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+function stringLength(value: unknown): number | undefined {
+  return typeof value === "string" ? value.length : undefined;
+}
+
+/**
+ * Captures only the protocol shape of an OpenAI-compatible SSE response.  The
+ * actual model output, prompts, and credentials never enter this diagnostic.
+ * This lets exported Android diagnostics distinguish an empty upstream answer
+ * from a relay response shape that pi-ai 0.84.1 does not parse.
+ */
+class OpenAiSseShapeObserver {
+  private readonly eventShapes = new Map<string, number>();
+  private readonly deltaShapes = new Map<string, number>();
+  private lineBuffer = "";
+  private dataLines: string[] = [];
+  private eventCount = 0;
+  private jsonChunkCount = 0;
+  private doneCount = 0;
+  private invalidJsonCount = 0;
+  private choiceChunkCount = 0;
+  private textDeltaCount = 0;
+  private textDeltaChars = 0;
+  private reasoningDeltaCount = 0;
+  private reasoningDeltaChars = 0;
+
+  constructor(
+    private readonly details: Record<string, unknown>,
+  ) {}
+
+  write(value: string): void {
+    this.lineBuffer += value;
+    while (true) {
+      const newline = this.lineBuffer.indexOf("\n");
+      if (newline < 0) return;
+      const line = this.lineBuffer.slice(0, newline).replace(/\r$/, "");
+      this.lineBuffer = this.lineBuffer.slice(newline + 1);
+      this.consumeLine(line);
+    }
+  }
+
+  finish(): void {
+    if (this.lineBuffer.length > 0) this.consumeLine(this.lineBuffer.replace(/\r$/, ""));
+    this.lineBuffer = "";
+    this.consumeEvent();
+    bridgeDiagnostic("openai_sse_shape", {
+      ...this.details,
+      sse_events: this.eventCount,
+      json_chunks: this.jsonChunkCount,
+      done_events: this.doneCount,
+      invalid_json_events: this.invalidJsonCount,
+      choice_chunks: this.choiceChunkCount,
+      text_delta_count: this.textDeltaCount,
+      text_delta_chars: this.textDeltaChars,
+      reasoning_delta_count: this.reasoningDeltaCount,
+      reasoning_delta_chars: this.reasoningDeltaChars,
+      event_shapes: Object.fromEntries(this.eventShapes),
+      delta_shapes: Object.fromEntries(this.deltaShapes),
+    });
+  }
+
+  private consumeLine(line: string): void {
+    if (line.length === 0) {
+      this.consumeEvent();
+      return;
+    }
+    if (line.startsWith("data:")) this.dataLines.push(line.slice(5).trimStart());
+  }
+
+  private consumeEvent(): void {
+    if (this.dataLines.length === 0) return;
+    this.eventCount += 1;
+    const data = this.dataLines.join("\n");
+    this.dataLines = [];
+    if (data === "[DONE]") {
+      this.doneCount += 1;
+      return;
+    }
+    let chunk: unknown;
+    try {
+      chunk = JSON.parse(data);
+    } catch {
+      this.invalidJsonCount += 1;
+      return;
+    }
+    this.jsonChunkCount += 1;
+    const payload = asObject(chunk);
+    const topLevelFields = Object.keys(payload).sort();
+    const choices = payload.choices;
+    const choicesKind = valueKind(choices);
+    const choice = Array.isArray(choices) ? asObject(choices[0]) : {};
+    const choiceFields = Object.keys(choice).sort();
+    this.increment(this.eventShapes, JSON.stringify({
+      top_level_fields: topLevelFields,
+      choices_kind: choicesKind,
+      choice_fields: choiceFields,
+    }));
+    if (!Array.isArray(choices) || choiceFields.length === 0) return;
+    this.choiceChunkCount += 1;
+    const delta = asObject(choice.delta);
+    const deltaFields = Object.keys(delta).sort();
+    const text = delta.content;
+    const reasoning = delta.reasoning_content ?? delta.reasoning ?? delta.reasoning_text;
+    const shape: OpenAiSseDeltaShape = {
+      fields: deltaFields,
+      ...(Object.hasOwn(delta, "content") ? { text_kind: valueKind(text) } : {}),
+      ...(stringLength(text) !== undefined ? { text_chars: stringLength(text) } : {}),
+      ...(reasoning !== undefined ? { reasoning_kind: valueKind(reasoning) } : {}),
+      ...(stringLength(reasoning) !== undefined ? { reasoning_chars: stringLength(reasoning) } : {}),
+      ...(Array.isArray(delta.tool_calls) ? { tool_call_count: delta.tool_calls.length } : {}),
+    };
+    this.increment(this.deltaShapes, JSON.stringify(shape));
+    if (typeof text === "string" && text.length > 0) {
+      this.textDeltaCount += 1;
+      this.textDeltaChars += text.length;
+    }
+    if (typeof reasoning === "string" && reasoning.length > 0) {
+      this.reasoningDeltaCount += 1;
+      this.reasoningDeltaChars += reasoning.length;
+    }
+  }
+
+  private increment(target: Map<string, number>, key: string): void {
+    target.set(key, (target.get(key) ?? 0) + 1);
+  }
+}
+
+function responseWithOpenAiSseShapeObserver(
+  response: Response,
+  details: Record<string, unknown>,
+): Response {
+  if (!response.body || !response.headers.get("content-type")?.toLowerCase().includes("text/event-stream")) {
+    return response;
+  }
+  const decoder = new TextDecoder();
+  const observer = new OpenAiSseShapeObserver({
+    ...details,
+    response_status: response.status,
+  });
+  const transform = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      observer.write(decoder.decode(chunk, { stream: true }));
+      controller.enqueue(chunk);
+    },
+    flush() {
+      observer.write(decoder.decode());
+      observer.finish();
+    },
+  });
+  return new Response(response.body.pipeThrough(transform), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 function fetchUrl(input: string | URL | Request): string {
   if (typeof input === "string") return input;
   if (input instanceof URL) return input.toString();
@@ -878,6 +1048,41 @@ function compatibilityModeStreams(streams: ProviderStreams): ProviderStreams {
       };
     },
   } as SupportedOptions);
+
+  return {
+    ...streams,
+    stream: wrap(streams.stream as StreamCall) as ProviderStreams["stream"],
+    streamSimple: wrap(streams.streamSimple as StreamCall) as ProviderStreams["streamSimple"],
+  };
+}
+
+function openAiSseDiagnosticsStreams(
+  streams: ProviderStreams,
+  config: ModelConfig,
+): ProviderStreams {
+  type SupportedOptions = StreamOptions | SimpleStreamOptions;
+  type StreamCall = (
+    model: Model<"openai-completions">,
+    context: Context,
+    options?: SupportedOptions,
+  ) => AssistantMessageEventStream;
+
+  const wrap = (call: StreamCall): StreamCall => (model, context, options) => {
+    const requestFetch = options?.fetch ?? globalThis.fetch;
+    return call(model, context, {
+      ...options,
+      fetch: async (input: string | URL | Request, init?: RequestInit) => {
+        const response = await requestFetch(input, init);
+        const url = fetchUrl(input);
+        return url.includes("/chat/completions")
+          ? responseWithOpenAiSseShapeObserver(response, {
+              provider_config_id: config.provider_config_id,
+              model_id: config.model_id,
+            })
+          : response;
+      },
+    } as SupportedOptions);
+  };
 
   return {
     ...streams,
@@ -1192,6 +1397,9 @@ function buildModels(config: ModelConfig): {
     supports_finish_reason: model.compat?.supportsFinishReason ?? null,
   });
   const headers = config.custom_headers ?? {};
+  const customStreams = config.compatibility_mode
+    ? compatibilityModeStreams(apiStreamsFor(config.pi_api))
+    : apiStreamsFor(config.pi_api);
   const provider = createProvider({
     id: config.pi_provider_id,
     name: config.pi_provider_id,
@@ -1212,9 +1420,7 @@ function buildModels(config: ModelConfig): {
     },
     models: [model],
     api: developerRoleFallbackStreams(
-      config.compatibility_mode
-        ? compatibilityModeStreams(apiStreamsFor(config.pi_api))
-        : apiStreamsFor(config.pi_api),
+      openAiSseDiagnosticsStreams(customStreams, config),
       compatibilityFallbackState,
     ),
   });
@@ -1444,6 +1650,21 @@ function assistantThinking(message: AssistantMessage): string {
     .filter((block) => block.type === "thinking")
     .map((block) => block.thinking)
     .join("");
+}
+
+function assistantMessageShape(message: AssistantMessage): JsonObject {
+  const blocks = message.content.map((block) => {
+    if (block.type === "text") return { type: "text", chars: block.text.length };
+    if (block.type === "thinking") return { type: "thinking", chars: block.thinking.length };
+    if (block.type === "toolCall") return { type: "tool_call" };
+    return { type: block.type };
+  });
+  return {
+    stop_reason: message.stopReason,
+    text_chars: assistantText(message).length,
+    reasoning_chars: assistantThinking(message).length,
+    message_blocks: blocks,
+  };
 }
 
 function assistantPayload(message: AssistantMessage): JsonObject {
@@ -2818,6 +3039,12 @@ async function runNativeAgentPrompt(
     await state.session.waitForIdle();
     const message = latestAssistantMessage(state.session.messages);
     if (!message) throw new Error(`Pi session ${state.sessionId} has no assistant response.`);
+    bridgeDiagnostic("agent_turn_assistant_shape", {
+      session_id: state.sessionId,
+      model_id: state.model.id,
+      supports_finish_reason: state.model.compat?.supportsFinishReason ?? null,
+      ...assistantMessageShape(message),
+    });
     return message;
   } finally {
     activeAborters.delete(id);
