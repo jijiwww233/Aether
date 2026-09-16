@@ -191,6 +191,7 @@ class PiProviderMapperTest {
         ).toPiModelConfig()
 
         assertEquals("custom", config.providerType)
+        assertEquals("custom", config.toJson().optString("provider_type"))
         assertTrue(config.piProviderId.startsWith("aether-"))
         assertEquals("openai-completions", config.piApi)
         assertEquals(
@@ -215,6 +216,20 @@ class PiProviderMapperTest {
                 modelId = "custom-model",
             ).toPiModelConfig().customHeaders["User-Agent"],
         )
+    }
+
+    @Test
+    fun manualOpenAiCompatibleModelUsesTheBridgeCustomProviderPath() {
+        val payload = AppSettings(
+            piProviderId = "openai-compatible",
+            providerConfigId = "jiushi",
+            baseUrl = "https://api.jiushi.xin/v1",
+            modelId = "[企业按量]claude-opus-4-6",
+        ).toPiModelConfig().toJson()
+
+        assertEquals("custom", payload.optString("provider_type"))
+        assertEquals("openai-completions", payload.optString("pi_api"))
+        assertEquals("[企业按量]claude-opus-4-6", payload.optString("model_id"))
     }
 
     @Test
