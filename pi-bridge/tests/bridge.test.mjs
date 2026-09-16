@@ -1852,6 +1852,61 @@ test("accepts normal EOF without finish_reason for a custom OpenAI-compatible pr
   assert.equal(receivedRequest.body.model, "custom-model");
 });
 
+test("Android custom provider AgentSession keeps finish_reason compatibility for a manual model", async (t) => {
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write(
+        `data: ${JSON.stringify({
+          id: "chatcmpl-android-custom",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "[企业按量]claude-opus-4-6",
+          choices: [{
+            index: 0,
+            delta: { role: "assistant", content: "ANDROID_CUSTOM_OK" },
+            finish_reason: null,
+          }],
+        })}\n\n`,
+      );
+      response.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const client = new BridgeClient();
+  const result = await client.request(
+    "android-custom-provider-agent",
+    "run_turn",
+    {
+      ...turnPayload(
+        "session-android-custom-provider",
+        [userMessage("hello")],
+        {
+          provider_type: "custom",
+          provider_config_id: "jiushi",
+          pi_provider_id: "aether-jiushi",
+          pi_api: "openai-completions",
+          model_id: "[企业按量]claude-opus-4-6",
+          base_url: `http://127.0.0.1:${address.port}/v1`,
+          api_key: "secret-key",
+          reasoning: false,
+        },
+      ),
+      platform: "android",
+      include_model_debug: true,
+    },
+  );
+
+  assert.equal(result.assistant_text, "ANDROID_CUSTOM_OK", JSON.stringify(result));
+  assert.equal(result.stop_reason, "stop", JSON.stringify(result));
+  assert.equal(result.model_debug.compat.supports_finish_reason, false, JSON.stringify(result));
+});
+
 test("does not apply the missing finish_reason compatibility to built-in providers", async () => {
   const bridgeSource = await readFile(new URL("../src/bridge.ts", import.meta.url), "utf8");
   const builtInBranchStart = bridgeSource.indexOf('if (config.provider_type === "builtin")');
