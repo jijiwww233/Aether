@@ -25,6 +25,7 @@ import com.zhousl.aether.ui.ChatAttachment
 import com.zhousl.aether.ui.ChatBranchGroup
 import com.zhousl.aether.ui.ChatMessage
 import com.zhousl.aether.ui.ChatSession
+import com.zhousl.aether.ui.ConversationMode
 import com.zhousl.aether.ui.ChatToolInvocation
 import com.zhousl.aether.ui.ChatUsageStatistics
 import com.zhousl.aether.ui.MessageAuthor
@@ -987,6 +988,7 @@ private fun ChatSession.toSessionEntity(sortOrder: Long): ChatSessionEntity = Ch
     title = title,
     preview = preview,
     hasCustomTitle = hasCustomTitle,
+    conversationMode = conversationMode.storageValue,
     agentModeEnabled = agentModeEnabled,
     chromeEnabled = chromeEnabled,
     selectedModelKey = selectedModelKey,
@@ -1034,6 +1036,7 @@ private fun ChatSessionEntity.toChatSession(
         selectedSkillIds = emptyList(),
         activeSkills = emptyList(),
         activeMcpServerIds = emptyList(),
+        conversationMode = ConversationMode.fromStored(conversationMode),
         agentModeEnabled = agentModeEnabled,
         chromeEnabled = chromeEnabled,
         selectedModelKey = selectedModelKey,
@@ -1074,6 +1077,11 @@ internal fun parseChatSessionsForMigration(rawValue: String): LegacyChatSessions
                             selectedSkillIds = emptyList(),
                             activeSkills = emptyList(),
                             activeMcpServerIds = emptyList(),
+                            conversationMode = if (session.has("conversationMode")) {
+                                ConversationMode.fromStored(session.optString("conversationMode"))
+                            } else {
+                                ConversationMode.Agent
+                            },
                             agentModeEnabled = session.optBoolean("agentModeEnabled", false),
                             chromeEnabled = session.optBoolean("chromeEnabled", false),
                             selectedModelKey = session.optString("selectedModelKey"),
@@ -1125,6 +1133,7 @@ internal fun ChatSession.toJson(): JSONObject = JSONObject().apply {
     put("title", title)
     put("preview", preview)
     put("hasCustomTitle", hasCustomTitle)
+    put("conversationMode", conversationMode.storageValue)
     put("agentModeEnabled", agentModeEnabled)
     put("chromeEnabled", chromeEnabled)
     put("selectedModelKey", selectedModelKey)
