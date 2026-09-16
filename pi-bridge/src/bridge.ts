@@ -1020,8 +1020,12 @@ function createAetherModel(config: ModelConfig): Model<string> {
   // a normal stop when this compatibility flag is disabled.  This constructor
   // is only used by Aether's custom provider path; built-in providers retain
   // their catalog-provided compatibility settings below.
+  const isCustomOpenAICompletions =
+    config.provider_type !== "builtin" &&
+    config.provider_type !== "faux" &&
+    config.pi_api === "openai-completions";
   const compat = {
-    ...(config.provider_type === "openai_compatible" ? { supportsFinishReason: false } : {}),
+    ...(isCustomOpenAICompletions ? { supportsFinishReason: false } : {}),
     ...(config.supports_developer_role === false ? { supportsDeveloperRole: false } : {}),
   };
   return {
@@ -1044,6 +1048,17 @@ function createAetherModel(config: ModelConfig): Model<string> {
     headers: config.custom_headers,
     ...(Object.keys(compat).length > 0 ? { compat } : {}),
   } as Model<string>;
+}
+
+function modelDebugPayload(model: Model<string>): JsonObject {
+  return {
+    id: model.id,
+    provider: model.provider,
+    api: model.api,
+    compat: {
+      supports_finish_reason: model.compat?.supportsFinishReason ?? null,
+    },
+  };
 }
 
 function buildModels(config: ModelConfig): {
@@ -1171,7 +1186,11 @@ function buildModels(config: ModelConfig): {
 
   const models = createModels();
   const model = createAetherModel(config);
-  bridgeDebug("build_models_path", { path: "custom", pi_api: config.pi_api });
+  bridgeDebug("build_models_path", {
+    path: "custom",
+    pi_api: config.pi_api,
+    supports_finish_reason: model.compat?.supportsFinishReason ?? null,
+  });
   const headers = config.custom_headers ?? {};
   const provider = createProvider({
     id: config.pi_provider_id,
@@ -2832,6 +2851,7 @@ async function runNativeAgentTurn(id: string, payload: JsonObject): Promise<Json
     session_reused: reused,
     developer_role_unsupported_detected:
       state.compatibilityFallbackState.developerRoleUnsupportedDetected,
+    ...(asBoolean(payload.include_model_debug, false) ? { model_debug: modelDebugPayload(state.model) } : {}),
   };
 }
 
