@@ -597,6 +597,8 @@
 
     <!-- Agent -->
     <string name="agent_mode_label">Agent 模式</string>
+    <string name="conversation_mode_chat">普通聊天</string>
+    <string name="conversation_mode_agent">Agent</string>
     <string name="agent_mode_display_id">显示 %1$d</string>
     <string name="agent_mode_replay_frame">Agent 模式回放帧</string>
     <string name="agent_mode_replay_preview_unavailable">预览不可用</string>
