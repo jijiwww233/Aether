@@ -1255,13 +1255,20 @@ function createAetherModel(config: ModelConfig): Model<string> {
   } as Model<string>;
 }
 
+function supportsFinishReason(model: Model<string>): boolean | null {
+  // `Model<string>` cannot expose API-specific compat fields through pi-ai's
+  // generic type, though custom OpenAI models carry this field at runtime.
+  const compat = (model as unknown as { compat?: { supportsFinishReason?: boolean } }).compat;
+  return compat?.supportsFinishReason ?? null;
+}
+
 function modelDebugPayload(model: Model<string>): JsonObject {
   return {
     id: model.id,
     provider: model.provider,
     api: model.api,
     compat: {
-      supports_finish_reason: model.compat?.supportsFinishReason ?? null,
+      supports_finish_reason: supportsFinishReason(model),
     },
   };
 }
@@ -1394,7 +1401,7 @@ function buildModels(config: ModelConfig): {
   bridgeDebug("build_models_path", {
     path: "custom",
     pi_api: config.pi_api,
-    supports_finish_reason: model.compat?.supportsFinishReason ?? null,
+    supports_finish_reason: supportsFinishReason(model),
   });
   const headers = config.custom_headers ?? {};
   const customStreams = config.compatibility_mode
@@ -1657,7 +1664,7 @@ function assistantMessageShape(message: AssistantMessage): JsonObject {
     if (block.type === "text") return { type: "text", chars: block.text.length };
     if (block.type === "thinking") return { type: "thinking", chars: block.thinking.length };
     if (block.type === "toolCall") return { type: "tool_call" };
-    return { type: block.type };
+    return { type: "other" };
   });
   return {
     stop_reason: message.stopReason,
@@ -3042,7 +3049,7 @@ async function runNativeAgentPrompt(
     bridgeDiagnostic("agent_turn_assistant_shape", {
       session_id: state.sessionId,
       model_id: state.model.id,
-      supports_finish_reason: state.model.compat?.supportsFinishReason ?? null,
+      supports_finish_reason: supportsFinishReason(state.model),
       ...assistantMessageShape(message),
     });
     return message;
