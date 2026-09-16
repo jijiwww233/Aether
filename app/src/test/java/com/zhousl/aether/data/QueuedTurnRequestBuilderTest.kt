@@ -3,6 +3,7 @@ package com.zhousl.aether.data
 import com.zhousl.aether.ui.ChatMessage
 import com.zhousl.aether.ui.ChatSession
 import com.zhousl.aether.ui.MessageAuthor
+import com.zhousl.aether.ui.ConversationMode
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -30,6 +31,7 @@ class QueuedTurnRequestBuilderTest {
             messages = emptyList(),
             messageCount = existingMessages.size,
             lastMessageAtMillis = 2L,
+            conversationMode = ConversationMode.Chat,
             agentModeEnabled = true,
         )
         val queuedInput = ChatMessage(
@@ -49,5 +51,6 @@ class QueuedTurnRequestBuilderTest {
         assertEquals(3, updated.messageCount)
         assertEquals(3L, updated.lastMessageAtMillis)
         assertEquals(true, updated.agentModeEnabled)
+        assertEquals(ConversationMode.Chat, updated.conversationMode)
     }
 }
