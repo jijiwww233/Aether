@@ -144,6 +144,15 @@ val Migration6To7 = object : Migration(6, 7) {
     }
 }
 
+/** Existing conversations used the AgentSession path before conversation modes existed. */
+val Migration7To8 = object : Migration(7, 8) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL(
+            "ALTER TABLE `chat_sessions` ADD COLUMN `conversationMode` TEXT NOT NULL DEFAULT 'agent'",
+        )
+    }
+}
+
 val ChatHistoryMigrations = arrayOf(
     Migration1To2,
     Migration2To3,
@@ -151,4 +160,5 @@ val ChatHistoryMigrations = arrayOf(
     Migration4To5,
     Migration5To6,
     Migration6To7,
+    Migration7To8,
 )
