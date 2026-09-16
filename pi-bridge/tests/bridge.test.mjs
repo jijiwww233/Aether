@@ -1865,7 +1865,33 @@ test("Android custom provider AgentSession keeps finish_reason compatibility for
           model: "[企业按量]claude-opus-4-6",
           choices: [{
             index: 0,
-            delta: { role: "assistant", content: "ANDROID_CUSTOM_OK" },
+            delta: { role: "assistant", content: null },
+            finish_reason: null,
+          }],
+        })}\n\n`,
+      );
+      response.write(
+        `data: ${JSON.stringify({
+          id: "chatcmpl-android-custom",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "[企业按量]claude-opus-4-6",
+          choices: [{
+            index: 0,
+            delta: { content: "ANDROID_" },
+            finish_reason: null,
+          }],
+        })}\n\n`,
+      );
+      response.write(
+        `data: ${JSON.stringify({
+          id: "chatcmpl-android-custom",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "[企业按量]claude-opus-4-6",
+          choices: [{
+            index: 0,
+            delta: { content: "CUSTOM_OK" },
             finish_reason: null,
           }],
         })}\n\n`,
@@ -1905,6 +1931,18 @@ test("Android custom provider AgentSession keeps finish_reason compatibility for
   assert.equal(result.assistant_text, "ANDROID_CUSTOM_OK", JSON.stringify(result));
   assert.equal(result.stop_reason, "stop", JSON.stringify(result));
   assert.equal(result.model_debug.compat.supports_finish_reason, false, JSON.stringify(result));
+  assert.deepEqual(
+    client.events
+      .filter((frame) => frame.id === "android-custom-provider-agent" && frame.event === "assistant_text_delta")
+      .map((frame) => frame.payload.delta),
+    ["ANDROID_", "CUSTOM_OK"],
+  );
+  assert.deepEqual(
+    result.assistant_message.content.map((block) => ({ type: block.type, text: block.text })),
+    [{ type: "text", text: "ANDROID_CUSTOM_OK" }],
+  );
+  assert.match(client.stderr, /openai_sse_shape/);
+  assert.match(client.stderr, /agent_turn_assistant_shape/);
 });
 
 test("does not apply the missing finish_reason compatibility to built-in providers", async () => {
