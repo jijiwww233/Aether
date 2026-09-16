@@ -2,6 +2,7 @@ package com.zhousl.aether.data.pi
 
 import com.zhousl.aether.data.AppSettings
 import com.zhousl.aether.data.LocalRuntimeId
+import com.zhousl.aether.data.platformDefaultSystemPrompt
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -40,6 +41,14 @@ internal fun buildPiAgentInstructions(
             "\n\nThe chat has enabled the browser tool (Chrome Extension tool). Prefer selectors and DOM-reading actions, and use coordinates only as a fallback."
         )
     }
+}
+
+/** The only system prompt permitted on the non-Agent chat transport. */
+internal fun buildPlainChatInstructions(settings: AppSettings): String {
+    val configured = expandDynamicPromptPlaceholders(settings.systemPrompt).trim()
+    // AppSettings historically defaults this field to Aether's agent prompt.
+    // In plain chat that default is not a user customization and must not leak.
+    return configured.takeUnless { it == platformDefaultSystemPrompt().trim() }.orEmpty()
 }
 
 private fun expandDynamicPromptPlaceholders(
