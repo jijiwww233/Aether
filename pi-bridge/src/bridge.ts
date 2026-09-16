@@ -621,10 +621,14 @@ function stringLength(value: unknown): number | undefined {
  * from a relay response shape that pi-ai 0.84.1 does not parse.
  */
 class OpenAiSseShapeObserver {
+  private static readonly MaxBodyDiagnosticChars = 32 * 1024;
   private readonly eventShapes = new Map<string, number>();
   private readonly deltaShapes = new Map<string, number>();
   private lineBuffer = "";
   private dataLines: string[] = [];
+  private bodyText = "";
+  private bodyChars = 0;
+  private bodyTruncated = false;
   private eventCount = 0;
   private jsonChunkCount = 0;
   private doneCount = 0;
@@ -640,6 +644,10 @@ class OpenAiSseShapeObserver {
   ) {}
 
   write(value: string): void {
+    this.bodyChars += value.length;
+    const available = OpenAiSseShapeObserver.MaxBodyDiagnosticChars - this.bodyText.length;
+    if (available > 0) this.bodyText += value.slice(0, available);
+    if (value.length > available) this.bodyTruncated = true;
     this.lineBuffer += value;
     while (true) {
       const newline = this.lineBuffer.indexOf("\n");
@@ -667,7 +675,42 @@ class OpenAiSseShapeObserver {
       reasoning_delta_chars: this.reasoningDeltaChars,
       event_shapes: Object.fromEntries(this.eventShapes),
       delta_shapes: Object.fromEntries(this.deltaShapes),
+      ...(this.eventCount === 0 ? this.nonSseBodyShape() : {}),
     });
+  }
+
+  private nonSseBodyShape(): JsonObject {
+    const body = this.bodyText.trim();
+    if (!body) {
+      return {
+        response_body_kind: "empty",
+        response_body_chars: this.bodyChars,
+      };
+    }
+    try {
+      const payload = asObject(JSON.parse(body));
+      const choices = payload.choices;
+      const choice = Array.isArray(choices) ? asObject(choices[0]) : {};
+      const message = asObject(choice.message);
+      const text = message.content;
+      return {
+        response_body_kind: "json",
+        response_body_chars: this.bodyChars,
+        response_body_truncated: this.bodyTruncated,
+        json_top_level_fields: Object.keys(payload).sort(),
+        json_choices_kind: valueKind(choices),
+        json_choice_fields: Object.keys(choice).sort(),
+        json_message_fields: Object.keys(message).sort(),
+        ...(Object.hasOwn(message, "content") ? { json_message_text_kind: valueKind(text) } : {}),
+        ...(stringLength(text) !== undefined ? { json_message_text_chars: stringLength(text) } : {}),
+      };
+    } catch {
+      return {
+        response_body_kind: "non_json",
+        response_body_chars: this.bodyChars,
+        response_body_truncated: this.bodyTruncated,
+      };
+    }
   }
 
   private consumeLine(line: string): void {
@@ -740,14 +783,20 @@ function responseWithOpenAiSseShapeObserver(
   response: Response,
   details: Record<string, unknown>,
 ): Response {
-  if (!response.body || !response.headers.get("content-type")?.toLowerCase().includes("text/event-stream")) {
+  const observerDetails = {
+    ...details,
+    response_status: response.status,
+    response_mime: response.headers.get("content-type") ?? "",
+  };
+  if (!response.body) {
+    bridgeDiagnostic("openai_sse_shape", {
+      ...observerDetails,
+      response_body_kind: "absent",
+    });
     return response;
   }
   const decoder = new TextDecoder();
-  const observer = new OpenAiSseShapeObserver({
-    ...details,
-    response_status: response.status,
-  });
+  const observer = new OpenAiSseShapeObserver(observerDetails);
   const transform = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       observer.write(decoder.decode(chunk, { stream: true }));
@@ -763,6 +812,87 @@ function responseWithOpenAiSseShapeObserver(
     statusText: response.statusText,
     headers: response.headers,
   });
+}
+
+function standardNonStreamingCompletionAsSse(body: string): {
+  id: string;
+  model: string;
+  text: string;
+  finishReason: unknown;
+} | undefined {
+  try {
+    const completion = asObject(JSON.parse(body));
+    const choices = completion.choices;
+    const choice = Array.isArray(choices) ? asObject(choices[0]) : {};
+    const message = asObject(choice.message);
+    const text = message.content;
+    if (typeof text !== "string") return undefined;
+    return {
+      id: asString(completion.id),
+      model: asString(completion.model),
+      text,
+      finishReason: choice.finish_reason,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function normalizeNonStreamingOpenAiCompletion(
+  response: Response,
+  details: Record<string, unknown>,
+): Promise<Response> {
+  const responseMime = response.headers.get("content-type") ?? "";
+  if (!response.body || responseMime.toLowerCase().includes("text/event-stream")) {
+    return responseWithOpenAiSseShapeObserver(response, details);
+  }
+
+  // A few relays accept stream=true but return a normal OpenAI completion
+  // object. Keep the request streaming and adapt only that documented JSON
+  // shape; every other body is replayed unchanged for pi-ai and diagnostics.
+  const body = await response.text();
+  const completion = standardNonStreamingCompletionAsSse(body);
+  if (!completion) {
+    return responseWithOpenAiSseShapeObserver(
+      new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      }),
+      details,
+    );
+  }
+  bridgeDiagnostic("openai_non_stream_completion_normalized", {
+    ...details,
+    response_status: response.status,
+    response_mime: responseMime,
+    text_chars: completion.text.length,
+    finish_reason_kind: valueKind(completion.finishReason),
+  });
+  const headers = new Headers(response.headers);
+  headers.set("content-type", "text/event-stream; charset=utf-8");
+  const chunks = [
+    {
+      id: completion.id,
+      object: "chat.completion.chunk",
+      model: completion.model,
+      choices: [{
+        index: 0,
+        delta: { role: "assistant", content: completion.text },
+        finish_reason: completion.finishReason ?? null,
+      }],
+    },
+    "[DONE]",
+  ];
+  const sse = chunks.map((chunk) => `data: ${typeof chunk === "string" ? chunk : JSON.stringify(chunk)}\n\n`).join("");
+  return responseWithOpenAiSseShapeObserver(
+    new Response(sse, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    }),
+    details,
+  );
 }
 
 function fetchUrl(input: string | URL | Request): string {
@@ -1075,7 +1205,7 @@ function openAiSseDiagnosticsStreams(
         const response = await requestFetch(input, init);
         const url = fetchUrl(input);
         return url.includes("/chat/completions")
-          ? responseWithOpenAiSseShapeObserver(response, {
+          ? normalizeNonStreamingOpenAiCompletion(response, {
               provider_config_id: config.provider_config_id,
               model_id: config.model_id,
             })
