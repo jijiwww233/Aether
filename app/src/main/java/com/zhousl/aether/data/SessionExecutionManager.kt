@@ -10,12 +10,15 @@ import com.zhousl.aether.runtime.RuntimeShellTool
 import com.zhousl.aether.data.pi.PiAgentRunner
 import com.zhousl.aether.data.pi.PiCompletionClient
 import com.zhousl.aether.data.pi.PiKernelBridge
+import com.zhousl.aether.data.pi.buildPlainChatInstructions
+import com.zhousl.aether.data.pi.toProviderPayloadJson
 import com.zhousl.aether.termux.TermuxBashTool
 import com.zhousl.aether.ui.AttachmentKind
 import com.zhousl.aether.ui.AssistantResponseBlock
 import com.zhousl.aether.ui.ChatAttachment
 import com.zhousl.aether.ui.ChatMessage
 import com.zhousl.aether.ui.ChatSession
+import com.zhousl.aether.ui.ConversationMode
 import com.zhousl.aether.ui.ChatToolInvocation
 import com.zhousl.aether.ui.ChatUsageStatistics
 import com.zhousl.aether.ui.MessageDisplayKind
@@ -110,6 +113,7 @@ data class SessionTurnRequest(
     val selectedSkillIds: List<String>,
     val activeSkills: List<ActiveSkillContext>,
     val activeMcpServerIds: List<String>,
+    val conversationMode: ConversationMode,
     val agentModeEnabled: Boolean,
     val chromeEnabled: Boolean,
     val providerConfigs: List<LlmProviderConfig> = emptyList(),
@@ -376,6 +380,7 @@ class SessionExecutionManager(
         var selectedSkillIds: List<String> = emptyList()
         var activeSkills: List<ActiveSkillContext> = emptyList()
         var activeMcpServerIds: List<String> = emptyList()
+        var conversationMode = ConversationMode.Chat
         var agentModeEnabled = false
         var chromeEnabled = false
 
@@ -405,6 +410,7 @@ class SessionExecutionManager(
             selectedSkillIds = updatedSession.selectedSkillIds
             activeSkills = updatedSession.activeSkills
             activeMcpServerIds = updatedSession.activeMcpServerIds
+            conversationMode = updatedSession.conversationMode
             agentModeEnabled = updatedSession.agentModeEnabled
             chromeEnabled = updatedSession.chromeEnabled
             updatedSessions.add(0, updatedSession)
@@ -427,6 +433,7 @@ class SessionExecutionManager(
                 selectedSkillIds = selectedSkillIds,
                 activeSkills = activeSkills,
                 activeMcpServerIds = activeMcpServerIds,
+                conversationMode = conversationMode,
                 agentModeEnabled = agentModeEnabled,
                 chromeEnabled = chromeEnabled,
                 providerConfigs = providerConfigs,
@@ -524,20 +531,6 @@ class SessionExecutionManager(
                 "base_url" to DiagnosticRedactor.sanitizedBaseUrl(request.settings.baseUrl),
             ),
         )
-        val selfManagementTool = AetherSelfManagementTool(
-            settingsRepository = settingsRepository,
-            extensionsRepository = extensionsRepository,
-            skillManager = skillManager,
-            bashTool = bashTool,
-            rootSetupController = rootSetupController,
-            agentModeController = agentModeController,
-            scheduledTaskManager = scheduledTaskManager,
-            piExtensionManager = piExtensionManager,
-            piKernelBridge = piKernelBridge,
-            sessionId = handle.sessionId,
-            diagnosticLogger = diagnosticLogger,
-        )
-
         updateExecutionState(handle.sessionId) {
             it.copy(
                 sessionId = handle.sessionId,
@@ -552,6 +545,27 @@ class SessionExecutionManager(
         }
 
         return try {
+            if (request.conversationMode == ConversationMode.Chat) {
+                return executePlainChatTurn(
+                    handle = handle,
+                    request = request,
+                    turnId = turnId,
+                    turnStartedAtMillis = turnStartedAtMillis,
+                )
+            }
+            val selfManagementTool = AetherSelfManagementTool(
+                settingsRepository = settingsRepository,
+                extensionsRepository = extensionsRepository,
+                skillManager = skillManager,
+                bashTool = bashTool,
+                rootSetupController = rootSetupController,
+                agentModeController = agentModeController,
+                scheduledTaskManager = scheduledTaskManager,
+                piExtensionManager = piExtensionManager,
+                piKernelBridge = piKernelBridge,
+                sessionId = handle.sessionId,
+                diagnosticLogger = diagnosticLogger,
+            )
             val resolvedAvailableSkills = currentExtensionsState.value.installedSkills
                 .filter { it.isEnabled }
                 .sortedBy { it.name.lowercase() }
@@ -951,6 +965,167 @@ class SessionExecutionManager(
                 }
             }
         }
+    }
+
+    /**
+     * Runs a plain chat completion without constructing an AgentSession or any
+     * workspace/tool/skill runtime. The bridge's complete_once handler uses
+     * pi-ai's streamSimple directly.
+     */
+    private suspend fun executePlainChatTurn(
+        handle: SessionExecutionHandle,
+        request: SessionTurnRequest,
+        turnId: String,
+        turnStartedAtMillis: Long,
+    ): CompletionSummary {
+        var firstAssistantTokenAtMillis: Long? = null
+        val modelKey = thinkingCatalogKey(request.settings.piProviderId, request.settings.modelId)
+        val thinkingLevelMap = settingsRepository.loadThinkingLevelMapsCache()[modelKey].orEmpty()
+        val isReasoningModel = modelKey in settingsRepository.loadReasoningModelsCache()
+        val messages = buildPlainChatRequestMessages(
+            messages = request.requestMessages,
+            settings = request.settings,
+        )
+        val result = requireNotNull(piCompletionClient) {
+            "Plain chat is unavailable because the Pi completion client is not configured."
+        }.completeOnce(
+            settings = request.settings,
+            systemPrompt = buildPlainChatInstructions(request.settings),
+            messages = messages,
+            stream = true,
+            thinkingLevelMap = thinkingLevelMap,
+            isReasoningModel = isReasoningModel,
+            onEvent = { event, eventPayload ->
+                if (handle.pauseRequested) return@completeOnce
+                when (event) {
+                    "assistant_text_delta" -> {
+                        val delta = eventPayload.optString("delta")
+                        if (delta.isEmpty()) return@completeOnce
+                        if (firstAssistantTokenAtMillis == null) {
+                            firstAssistantTokenAtMillis = System.currentTimeMillis()
+                        }
+                        handle.finishDirectReasoningSummaryChunk()
+                        completeActiveReasoning(handle, ReasoningCompletionTrigger.BodyStarted)
+                        updateExecutionState(handle.sessionId) { current ->
+                            val blocks = appendAssistantResponseText(
+                                blocks = completePendingReconnectBlocks(current.pendingResponseBlocks),
+                                delta = delta,
+                            ) { handle.nextPendingBlockId("pending-text") }
+                            current.copy(
+                                pendingStatusText = "",
+                                pendingStatusDetail = "",
+                                pendingAssistantText = pendingTrailingAssistantText(blocks),
+                                pendingResponseBlocks = blocks,
+                            )
+                        }
+                    }
+
+                    "assistant_reasoning_delta" -> {
+                        if (request.settings.reasoningEffort == "off") return@completeOnce
+                        val delta = eventPayload.optString("delta")
+                        if (delta.isNotEmpty()) appendReasoningDelta(handle, delta)
+                    }
+
+                    "assistant_error" -> updateExecutionState(handle.sessionId) { current ->
+                        current.copy(
+                            pendingStatusText = "Request failed",
+                            pendingStatusDetail = eventPayload.optString("error_message"),
+                        )
+                    }
+                }
+            },
+        ).mapCatching { completion ->
+            if (completion.errorMessage.isNotBlank()) error(completion.errorMessage)
+            completion
+        }
+
+        if (handle.pauseRequested) {
+            return finalizePausedTurn(
+                handle = handle,
+                snapshot = _executionStates.value[handle.sessionId]
+                    ?: SessionExecutionState(sessionId = handle.sessionId),
+            )
+        }
+
+        completeActiveReasoning(handle, ReasoningCompletionTrigger.TurnFinished)
+        val thoughtDurationMillis = (System.currentTimeMillis() - turnStartedAtMillis).coerceAtLeast(0L)
+        val turnCompletedAtMillis = System.currentTimeMillis()
+        val estimatedTokenUsage = estimateRequestTokenUsage(request)
+        val completion = result.fold(
+            onSuccess = { response ->
+                val assistantText = response.assistantText.ifBlank {
+                    "The model finished without returning any assistant text."
+                }
+                val estimatedOutputTokens = approximateReasoningTokenCount(assistantText).toLong()
+                val tokenUsage = response.usage ?: estimatedTokenUsage.copy(
+                    outputTokens = estimatedOutputTokens,
+                    totalTokens = (estimatedTokenUsage.totalTokens ?: 0L) + estimatedOutputTokens,
+                )
+                val blocks = currentAssistantResponseBlocks(handle.sessionId).let { current ->
+                    if (request.settings.reasoningEffort == "off") current.sanitizedForReasoningOff() else current
+                }
+                appendAgentMessage(
+                    sessionId = handle.sessionId,
+                    blocks = ensureAssistantResponseFinalText(blocks, assistantText) {
+                        handle.nextPendingBlockId("agent-text")
+                    },
+                    thoughtDurationMillis = thoughtDurationMillis.takeIf {
+                        request.settings.reasoningEffort != "off"
+                    },
+                    outcome = SessionTurnOutcome.Success,
+                    tokenUsage = tokenUsage,
+                    tokenUsageSource = if (response.usage != null) "api" else "estimated",
+                    turnStartedAtMillis = turnStartedAtMillis,
+                    firstTokenAtMillis = firstAssistantTokenAtMillis,
+                    turnCompletedAtMillis = turnCompletedAtMillis,
+                    inputMessageCount = request.requestMessages.size,
+                    userMessageCount = request.requestMessages.count { it.author == MessageAuthor.User },
+                    providerPayloadJson = response.toProviderPayloadJson(),
+                    handle = handle,
+                )
+            },
+            onFailure = { throwable ->
+                val blocks = currentAssistantResponseBlocks(handle.sessionId).let { current ->
+                    if (request.settings.reasoningEffort == "off") current.sanitizedForReasoningOff() else current
+                }
+                appendAgentMessage(
+                    sessionId = handle.sessionId,
+                    blocks = appendAssistantResponseText(
+                        blocks = blocks,
+                        delta = buildString {
+                            if (blocks.lastOrNull() is AssistantResponseBlock.Text) append("\n\n")
+                            append("Request failed: ${formatFailureMessage(throwable)}")
+                        },
+                    ) { handle.nextPendingBlockId("agent-text") },
+                    thoughtDurationMillis = thoughtDurationMillis.takeIf {
+                        request.settings.reasoningEffort != "off"
+                    },
+                    outcome = SessionTurnOutcome.Failure,
+                    tokenUsage = estimatedTokenUsage,
+                    tokenUsageSource = "estimated",
+                    turnStartedAtMillis = turnStartedAtMillis,
+                    firstTokenAtMillis = firstAssistantTokenAtMillis,
+                    turnCompletedAtMillis = System.currentTimeMillis(),
+                    inputMessageCount = request.requestMessages.size,
+                    userMessageCount = request.requestMessages.count { it.author == MessageAuthor.User },
+                    handle = handle,
+                )
+            },
+        )
+        chatStateStore.flush()
+        _turnEvents.tryEmit(completion.toTurnEvent(handle.sessionId))
+        diagnosticLogger.event(
+            category = "session",
+            event = "plain_chat_turn_end",
+            sessionId = handle.sessionId,
+            turnId = turnId,
+            level = if (completion.outcome == SessionTurnOutcome.Failure) "warn" else "info",
+            details = mapOf(
+                "outcome" to completion.outcome.name,
+                "duration_millis" to completion.durationMillis,
+            ),
+        )
+        return completion
     }
 
     private suspend fun validateAgentSessionFile(
@@ -1737,6 +1912,22 @@ class SessionExecutionManager(
     ): List<LlmMessage> = messages
         .filter { it.displayKind != MessageDisplayKind.CompactStatus }
         .flatMap { message -> buildRequestMessagesForChatMessage(message, settings) }
+
+    /** Plain chat preserves visible conversation text but never forwards Agent tool-call protocol state. */
+    private fun buildPlainChatRequestMessages(
+        messages: List<ChatMessage>,
+        settings: AppSettings,
+    ): List<LlmMessage> = messages
+        .filter { it.displayKind != MessageDisplayKind.CompactStatus }
+        .map { message ->
+            buildRequestMessage(
+                message.copy(
+                    toolInvocations = emptyList(),
+                    providerPayloadJson = "",
+                ),
+                settings,
+            )
+        }
 
     private fun buildRequestMessagesForChatMessage(
         message: ChatMessage,
