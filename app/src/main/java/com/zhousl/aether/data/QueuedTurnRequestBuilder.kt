@@ -2,6 +2,7 @@ package com.zhousl.aether.data
 
 import com.zhousl.aether.ui.ChatMessage
 import com.zhousl.aether.ui.ChatSession
+import com.zhousl.aether.ui.ConversationMode
 import com.zhousl.aether.ui.syncActiveBranches
 
 internal class QueuedTurnRequestBuilder(
@@ -32,6 +33,7 @@ internal class QueuedTurnRequestBuilder(
                 selectedSkillIds = updatedSession.selectedSkillIds,
                 activeSkills = updatedSession.activeSkills,
                 activeMcpServerIds = updatedSession.activeMcpServerIds,
+                conversationMode = updatedSession.conversationMode,
                 agentModeEnabled = updatedSession.agentModeEnabled,
                 chromeEnabled = updatedSession.chromeEnabled,
                 selectedModelKey = updatedSession.selectedModelKey,
@@ -54,6 +56,7 @@ internal class QueuedTurnRequestBuilder(
             selectedSkillIds = selection.selectedSkillIds,
             activeSkills = selection.activeSkills,
             activeMcpServerIds = selection.activeMcpServerIds,
+            conversationMode = selection.conversationMode,
             agentModeEnabled = selection.agentModeEnabled,
             chromeEnabled = selection.chromeEnabled,
             providerConfigs = providerConfigs,
@@ -65,6 +68,7 @@ internal class QueuedTurnRequestBuilder(
         val selectedSkillIds: List<String> = emptyList(),
         val activeSkills: List<ActiveSkillContext> = emptyList(),
         val activeMcpServerIds: List<String> = emptyList(),
+        val conversationMode: ConversationMode = ConversationMode.Chat,
         val agentModeEnabled: Boolean = false,
         val chromeEnabled: Boolean = false,
         val selectedModelKey: String = "",
