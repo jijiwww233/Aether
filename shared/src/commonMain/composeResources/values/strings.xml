@@ -599,6 +599,8 @@
 
     <!-- Agent -->
     <string name="agent_mode_label">Agent Mode</string>
+    <string name="conversation_mode_chat">Chat</string>
+    <string name="conversation_mode_agent">Agent</string>
     <string name="agent_mode_display_id">display %1$d</string>
     <string name="agent_mode_replay_frame">Agent Mode replay frame</string>
     <string name="agent_mode_replay_preview_unavailable">Preview unavailable</string>
