@@ -47,6 +47,12 @@ internal fun isAlpineHostRuntimeIncomplete(
     libTallocInstalled: Boolean,
 ): Boolean = rootfsInstalled && (!prootInstalled || !loaderInstalled || !libTallocInstalled)
 
+internal fun isAlpineRootfsIncomplete(
+    rootfsInstalled: Boolean,
+    shellInstalled: Boolean,
+    alpineReleaseInstalled: Boolean,
+): Boolean = rootfsInstalled && (!shellInstalled || !alpineReleaseInstalled)
+
 internal enum class ApkNetworkEnvironment {
     China,
     International,
@@ -241,6 +247,16 @@ class AlpineRuntime(
                 )
             },
         )
+    }
+
+    /**
+     * Rebuilds the bundled rootfs only after an interrupted installation left an existing rootfs
+     * without its required shell or release marker.
+     */
+    suspend fun repairIncompleteRootfs(): LocalRuntimeSetupState = withContext(Dispatchers.IO) {
+        val setup = inspectSetup()
+        if (!hasIncompleteRootfs() || !hasBundledRuntimeAssets()) return@withContext setup
+        initialize()
     }
 
     suspend fun createTerminalLaunchSpec(): AlpineTerminalLaunchSpec = withContext(Dispatchers.IO) {
@@ -836,6 +852,12 @@ class AlpineRuntime(
         prootInstalled = prootFile.isFile,
         loaderInstalled = loaderFile.isFile,
         libTallocInstalled = libTallocFile.isFile,
+    )
+
+    private fun hasIncompleteRootfs(): Boolean = isAlpineRootfsIncomplete(
+        rootfsInstalled = rootfsDir.isDirectory,
+        shellInstalled = File(rootfsDir, "bin/sh").existsNoFollow(),
+        alpineReleaseInstalled = File(rootfsDir, "etc/alpine-release").existsNoFollow(),
     )
 
     private suspend fun installFromAssets(
