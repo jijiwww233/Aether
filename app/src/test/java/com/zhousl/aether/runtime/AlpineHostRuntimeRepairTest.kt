@@ -40,4 +40,26 @@ class AlpineHostRuntimeRepairTest {
             )
         )
     }
+
+    @Test
+    fun detectsMissingShellInAnInstalledRootfs() {
+        assertTrue(
+            isAlpineRootfsIncomplete(
+                rootfsInstalled = true,
+                shellInstalled = false,
+                alpineReleaseInstalled = true,
+            )
+        )
+    }
+
+    @Test
+    fun doesNotRebuildACompleteRootfs() {
+        assertFalse(
+            isAlpineRootfsIncomplete(
+                rootfsInstalled = true,
+                shellInstalled = true,
+                alpineReleaseInstalled = true,
+            )
+        )
+    }
 }
