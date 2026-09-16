@@ -2009,6 +2009,56 @@ test("normalizes a non-stream JSON completion without logging its text", async (
   assert.doesNotMatch(client.stderr, /PRIVATE_NON_STREAM_TEXT/);
 });
 
+test("rejects an HTML endpoint response instead of returning an empty assistant message", async (t) => {
+  const receivedPaths = [];
+  const server = createServer((request, response) => {
+    receivedPaths.push(request.url);
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><html><body>endpoint landing page</body></html>");
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const client = new BridgeClient();
+  const result = await client.request(
+    "custom-html-response",
+    "complete_once",
+    {
+      model_config: {
+        provider_type: "custom",
+        provider_config_id: "jiushi",
+        pi_provider_id: "aether-jiushi",
+        pi_api: "openai-completions",
+        model_id: "[企业按量]claude-opus-4-6",
+        // This reproduces the Base URL recorded in the device log.  The
+        // OpenAI client therefore requests /chat/completions, not /v1/… .
+        base_url: `http://127.0.0.1:${address.port}`,
+        api_key: "secret-key",
+        reasoning: false,
+        max_retries: 0,
+      },
+      system_prompt: "Reply briefly.",
+      messages: [userMessage("hello")],
+      stream: false,
+    },
+  );
+
+  assert.deepEqual(receivedPaths, ["/chat/completions"]);
+  assert.equal(result.assistant_text, "");
+  assert.match(result.error_message, /returned an HTML document instead of a Chat Completions response/i);
+  assert.match(result.error_message, /Base URL includes the API path/i);
+  assert.match(client.stderr, /openai_sse_shape/);
+  assert.match(client.stderr, /response_mime.*text\/html/);
+  assert.match(client.stderr, /payload_kind.*html/);
+  assert.match(client.stderr, /request_path.*\/chat\/completions/);
+  assert.match(client.stderr, /openai_unexpected_html_response/);
+});
+
 test("falls back from developer to system only for a structured role rejection", async (t) => {
   const receivedRoles = [];
   const server = createServer((request, response) => {

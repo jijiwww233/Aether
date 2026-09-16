@@ -683,8 +683,15 @@ class OpenAiSseShapeObserver {
     const body = this.bodyText.trim();
     if (!body) {
       return {
-        response_body_kind: "empty",
-        response_body_chars: this.bodyChars,
+        payload_kind: "empty",
+        payload_chars: this.bodyChars,
+      };
+    }
+    if (body.startsWith("<")) {
+      return {
+        payload_kind: "html",
+        payload_chars: this.bodyChars,
+        payload_truncated: this.bodyTruncated,
       };
     }
     try {
@@ -694,9 +701,9 @@ class OpenAiSseShapeObserver {
       const message = asObject(choice.message);
       const text = message.content;
       return {
-        response_body_kind: "json",
-        response_body_chars: this.bodyChars,
-        response_body_truncated: this.bodyTruncated,
+        payload_kind: "json",
+        payload_chars: this.bodyChars,
+        payload_truncated: this.bodyTruncated,
         json_top_level_fields: Object.keys(payload).sort(),
         json_choices_kind: valueKind(choices),
         json_choice_fields: Object.keys(choice).sort(),
@@ -706,9 +713,9 @@ class OpenAiSseShapeObserver {
       };
     } catch {
       return {
-        response_body_kind: "non_json",
-        response_body_chars: this.bodyChars,
-        response_body_truncated: this.bodyTruncated,
+        payload_kind: "non_json",
+        payload_chars: this.bodyChars,
+        payload_truncated: this.bodyTruncated,
       };
     }
   }
@@ -791,7 +798,7 @@ function responseWithOpenAiSseShapeObserver(
   if (!response.body) {
     bridgeDiagnostic("openai_sse_shape", {
       ...observerDetails,
-      response_body_kind: "absent",
+      payload_kind: "absent",
     });
     return response;
   }
@@ -851,6 +858,55 @@ async function normalizeNonStreamingOpenAiCompletion(
   // object. Keep the request streaming and adapt only that documented JSON
   // shape; every other body is replayed unchanged for pi-ai and diagnostics.
   const body = await response.text();
+  // A successful HTML document is not an OpenAI completion.  In particular,
+  // supportsFinishReason=false must not turn an HTML landing page into a
+  // normal empty `stop` response merely because it has no finish_reason.
+  // Only reject an actual HTML document here; a relay with a bad MIME type but
+  // valid SSE/JSON body remains on the existing compatibility path.
+  if (response.ok && responseMime.toLowerCase().includes("text/html") && body.trimStart().startsWith("<")) {
+    bridgeDiagnostic("openai_sse_shape", {
+      ...details,
+      response_status: response.status,
+      response_mime: responseMime,
+      sse_events: 0,
+      json_chunks: 0,
+      done_events: 0,
+      invalid_json_events: 0,
+      choice_chunks: 0,
+      text_delta_count: 0,
+      text_delta_chars: 0,
+      reasoning_delta_count: 0,
+      reasoning_delta_chars: 0,
+      event_shapes: {},
+      delta_shapes: {},
+      payload_kind: "html",
+      payload_chars: body.length,
+      payload_truncated: false,
+    });
+    bridgeDiagnostic("openai_unexpected_html_response", {
+      ...details,
+      response_status: response.status,
+      response_mime: responseMime,
+    });
+    const message =
+      "OpenAI-compatible endpoint returned an HTML document instead of a Chat Completions response. " +
+      "Check that its Base URL includes the API path (for example, /v1).";
+    // Throwing from a custom fetch implementation is collapsed by the OpenAI
+    // SDK into an unhelpful "Connection error.".  Return a synthetic, local
+    // API error instead so the Android UI receives the actionable cause.  This
+    // branch applies only to a successful HTML document; real HTTP/network
+    // failures still use the upstream response unchanged below.
+    return new Response(JSON.stringify({
+      error: {
+        message,
+        type: "invalid_response_error",
+      },
+    }), {
+      status: 422,
+      statusText: "Unexpected HTML response",
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
   const completion = standardNonStreamingCompletionAsSse(body);
   if (!completion) {
     return responseWithOpenAiSseShapeObserver(
@@ -899,6 +955,14 @@ function fetchUrl(input: string | URL | Request): string {
   if (typeof input === "string") return input;
   if (input instanceof URL) return input.toString();
   return input.url;
+}
+
+function fetchPath(input: string | URL | Request): string {
+  try {
+    return new URL(fetchUrl(input)).pathname;
+  } catch {
+    return "";
+  }
 }
 
 async function withAetherOAuthTransport<T>(
@@ -1208,6 +1272,7 @@ function openAiSseDiagnosticsStreams(
           ? normalizeNonStreamingOpenAiCompletion(response, {
               provider_config_id: config.provider_config_id,
               model_id: config.model_id,
+              request_path: fetchPath(input),
             })
           : response;
       },

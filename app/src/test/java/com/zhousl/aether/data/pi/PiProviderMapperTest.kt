@@ -229,6 +229,7 @@ class PiProviderMapperTest {
 
         assertEquals("custom", payload.optString("provider_type"))
         assertEquals("openai-completions", payload.optString("pi_api"))
+        assertEquals("https://api.jiushi.xin/v1", payload.optString("base_url"))
         assertEquals("[企业按量]claude-opus-4-6", payload.optString("model_id"))
     }
 
