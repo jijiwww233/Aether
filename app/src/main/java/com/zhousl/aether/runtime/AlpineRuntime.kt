@@ -40,6 +40,13 @@ private val AlpineRootfsAssetCandidates = listOf(
     RootfsAsset("$AlpineAssetRoot/rootfs.tar", compressed = false),
 )
 
+internal fun isAlpineHostRuntimeIncomplete(
+    rootfsInstalled: Boolean,
+    prootInstalled: Boolean,
+    loaderInstalled: Boolean,
+    libTallocInstalled: Boolean,
+): Boolean = rootfsInstalled && (!prootInstalled || !loaderInstalled || !libTallocInstalled)
+
 internal enum class ApkNetworkEnvironment {
     China,
     International,
@@ -211,6 +218,28 @@ class AlpineRuntime(
             runtimeId = id,
             issue = LocalRuntimeIssue.NotInstalled,
             detail = "Alpine runtime data was reset.",
+        )
+    }
+
+    /**
+     * Restores only the bundled host executables when an interrupted prior install left the
+     * rootfs intact but omitted one of its proot support files. This preserves installed Alpine
+     * packages and the workspace.
+     */
+    suspend fun repairIncompleteHostRuntime(): LocalRuntimeSetupState = withContext(Dispatchers.IO) {
+        val setup = inspectSetup()
+        if (!hasIncompleteHostRuntime() || !hasBundledRuntimeAssets()) return@withContext setup
+        runCatching {
+            copyAsset("$AlpineAssetRoot/proot.bin", prootFile, executable = true)
+            copyAsset("$AlpineAssetRoot/loader.bin", loaderFile, executable = true)
+            copyAsset("$AlpineAssetRoot/libtalloc.so.2", libTallocFile, executable = false)
+        }.fold(
+            onSuccess = { inspectSetup() },
+            onFailure = { throwable ->
+                setup.copy(
+                    detail = throwable.message ?: "Failed to repair Alpine host runtime.",
+                )
+            },
         )
     }
 
@@ -481,7 +510,7 @@ class AlpineRuntime(
                 issue = LocalRuntimeIssue.NotInstalled,
                 detail = "Alpine rootfs is not installed.",
             )
-            !prootFile.isFile || !loaderFile.isFile || !libTallocFile.isFile -> LocalRuntimeSetupState(
+            hasIncompleteHostRuntime() -> LocalRuntimeSetupState(
                 runtimeId = id,
                 issue = LocalRuntimeIssue.Failed,
                 detail = "Alpine host runtime is incomplete.",
@@ -801,6 +830,13 @@ class AlpineRuntime(
         runCatching {
             appContext.assets.open(path).use { true }
         }.getOrDefault(false)
+
+    private fun hasIncompleteHostRuntime(): Boolean = isAlpineHostRuntimeIncomplete(
+        rootfsInstalled = rootfsDir.isDirectory,
+        prootInstalled = prootFile.isFile,
+        loaderInstalled = loaderFile.isFile,
+        libTallocInstalled = libTallocFile.isFile,
+    )
 
     private suspend fun installFromAssets(
         onProgress: (AlpineSetupProgress) -> Unit,
