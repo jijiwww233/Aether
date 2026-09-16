@@ -12,6 +12,7 @@ data class ChatSessionEntity(
     val title: String,
     val preview: String,
     val hasCustomTitle: Boolean,
+    val conversationMode: String,
     val agentModeEnabled: Boolean,
     val chromeEnabled: Boolean,
     val selectedModelKey: String,
