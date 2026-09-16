@@ -7,6 +7,7 @@ import com.zhousl.aether.ui.ChatAttachment
 import com.zhousl.aether.ui.ChatMessage
 import com.zhousl.aether.ui.ChatSession
 import com.zhousl.aether.ui.ChatToolInvocation
+import com.zhousl.aether.ui.ConversationMode
 import com.zhousl.aether.ui.MessageAuthor
 import org.json.JSONArray
 import org.json.JSONObject
@@ -16,6 +17,29 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatRepositorySerializationTest {
+    @Test
+    fun conversationModeRoundTripsWithSession() {
+        val session = ChatSession(
+            id = "chat-mode",
+            title = "Chat",
+            preview = "",
+            messages = emptyList(),
+            conversationMode = ConversationMode.Chat,
+        )
+
+        assertEquals(
+            ConversationMode.Chat,
+            parseChatSessions(serializeChatSessions(listOf(session))).single().conversationMode,
+        )
+    }
+
+    @Test
+    fun legacySessionWithoutConversationModeRestoresAsAgent() {
+        val legacy = """[{"id":"legacy","title":"Legacy","preview":"","messages":[]}]"""
+
+        assertEquals(ConversationMode.Agent, parseChatSessions(legacy).single().conversationMode)
+    }
+
     @Test
     fun serializationKeepsInlineImageBytesAndWorkspacePath() {
         val serialized = serializeChatSessions(
