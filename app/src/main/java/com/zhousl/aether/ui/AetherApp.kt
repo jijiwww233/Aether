@@ -476,6 +476,7 @@ private fun AetherAppContent(
     val agentModeReady = uiState.settings.agentModeAuthorizationEnabled &&
         effectiveTermuxSetupState.isReady &&
         uiState.agentModeAuthorizationState.isReady
+    val conversationMode = activeSession?.conversationMode ?: uiState.draftConversationMode
     val agentModeSelected = activeSession?.agentModeEnabled ?: uiState.draftAgentModeEnabled
     val chromeAvailable = uiState.alpineSetupState.isReady &&
         uiState.settings.alpinePackageProfiles["chrome"]?.installed == true
@@ -947,15 +948,20 @@ private fun AetherAppContent(
                     reasoningEffort = uiState.settings.reasoningEffort,
                     thinkingLevelsByProviderModel = uiState.thinkingLevelsByProviderModel,
                     thinkingLevelClampsByProviderModel = uiState.thinkingLevelClampsByProviderModel,
-                    availableSkills = uiState.installedSkills.filter { it.isEnabled },
+                    availableSkills = if (conversationMode == ConversationMode.Agent) {
+                        uiState.installedSkills.filter { it.isEnabled }
+                    } else {
+                        emptyList()
+                    },
                     availableMcpServers = emptyList(),
-                    selectedSkillIds = selectedSkillIds,
+                    selectedSkillIds = if (conversationMode == ConversationMode.Agent) selectedSkillIds else emptyList(),
                     selectedMcpServerIds = emptyList(),
+                    conversationMode = conversationMode,
                     agentModeAvailable = agentModeReady,
-                    agentModeSelected = agentModeSelected,
+                    agentModeSelected = conversationMode == ConversationMode.Agent && agentModeSelected,
                     agentModeDisplayState = uiState.agentModeDisplayState,
-                    chromeAvailable = chromeAvailable,
-                    chromeSelected = chromeSelected,
+                    chromeAvailable = conversationMode == ConversationMode.Agent && chromeAvailable,
+                    chromeSelected = conversationMode == ConversationMode.Agent && chromeSelected,
                     chromeDisplayState = uiState.chromeDisplayState,
                     allowRootImageRead = uiState.rootSetupState.isReady ||
                         (
@@ -974,6 +980,7 @@ private fun AetherAppContent(
                     onRemoveDraftAttachment = viewModel::removeDraftAttachment,
                     onSetSkillSelected = viewModel::setComposerSkillSelected,
                     onSetMcpServerSelected = { _, _ -> },
+                    onSetConversationMode = viewModel::setComposerConversationMode,
                     onSetAgentModeSelected = viewModel::setComposerAgentModeSelected,
                     onSetChromeSelected = viewModel::setComposerChromeSelected,
                     onCancelEdit = viewModel::cancelMessageEdit,
