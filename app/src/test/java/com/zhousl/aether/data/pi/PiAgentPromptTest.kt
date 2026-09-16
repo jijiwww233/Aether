@@ -3,10 +3,32 @@ package com.zhousl.aether.data.pi
 import com.zhousl.aether.data.AppSettings
 import com.zhousl.aether.data.LocalRuntimeId
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PiAgentPromptTest {
+    @Test
+    fun plainChatInstructionsAreEmptyWithoutPersonalization() {
+        val instructions = buildPlainChatInstructions(AppSettings())
+
+        assertEquals("", instructions)
+        assertFalse(instructions.contains("local-first Android agent"))
+        assertFalse(instructions.contains("call tools"))
+    }
+
+    @Test
+    fun plainChatInstructionsContainOnlyPersonalization() {
+        val instructions = buildPlainChatInstructions(
+            AppSettings(systemPrompt = "Reply in concise Chinese."),
+        )
+
+        assertEquals("Reply in concise Chinese.", instructions)
+        assertFalse(instructions.contains("Aether on Android"))
+        assertFalse(instructions.contains("workspace"))
+        assertFalse(instructions.contains("coding assistant"))
+    }
+
     @Test
     fun instructionsOnlyAppendAetherRuntimeConstraints() {
         val instructions = buildPiAgentInstructions(
