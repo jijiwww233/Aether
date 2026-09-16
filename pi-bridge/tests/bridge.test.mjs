@@ -1852,6 +1852,99 @@ test("accepts normal EOF without finish_reason for a custom OpenAI-compatible pr
   assert.equal(receivedRequest.body.model, "custom-model");
 });
 
+test("plain complete_once streams custom OpenAI output without AgentSession prompt or tools", async (t) => {
+  let requestBody;
+  const server = createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write(
+        `data: ${JSON.stringify({
+          id: "chatcmpl-plain-chat",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "[企业按量]claude-opus-4-6",
+          choices: [{ index: 0, delta: { role: "assistant", content: "PLAIN_CHAT_OK" }, finish_reason: null }],
+        })}\n\n`,
+      );
+      response.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const client = new BridgeClient();
+  const result = await client.request("plain-chat", "complete_once", {
+    model_config: {
+      provider_type: "custom",
+      provider_config_id: "jiushi",
+      pi_provider_id: "aether-jiushi",
+      pi_api: "openai-completions",
+      model_id: "[企业按量]claude-opus-4-6",
+      base_url: `http://127.0.0.1:${address.port}/v1`,
+      api_key: "secret-key",
+      reasoning: false,
+    },
+    system_prompt: "Reply in concise Chinese.",
+    messages: [userMessage("hello")],
+    stream: true,
+  });
+
+  assert.equal(result.assistant_text, "PLAIN_CHAT_OK", JSON.stringify(result));
+  assert.ok(
+    client.events.some((event) => event.id === "plain-chat" && event.event === "assistant_text_delta" && event.payload.delta === "PLAIN_CHAT_OK"),
+  );
+  const serializedRequest = JSON.stringify(requestBody);
+  assert.match(serializedRequest, /Reply in concise Chinese\./);
+  assert.doesNotMatch(serializedRequest, /coding agent harness|Aether on Android|Current working directory|workspace|read|bash|grep|find/i);
+  assert.doesNotMatch(serializedRequest, /tools/i);
+});
+
+test("plain complete_once omits an empty system prompt", async (t) => {
+  let requestBody;
+  const server = createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        id: "plain-empty",
+        object: "chat.completion",
+        model: "plain-model",
+        choices: [{ index: 0, message: { role: "assistant", content: "EMPTY_PROMPT_OK" }, finish_reason: "stop" }],
+      }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const client = new BridgeClient();
+  const result = await client.request("plain-empty", "complete_once", {
+    model_config: {
+      provider_type: "custom",
+      provider_config_id: "plain-empty",
+      pi_provider_id: "aether-plain-empty",
+      pi_api: "openai-completions",
+      model_id: "plain-model",
+      base_url: `http://127.0.0.1:${address.port}/v1`,
+      api_key: "secret-key",
+      reasoning: false,
+    },
+    messages: [userMessage("hello")],
+    stream: false,
+  });
+
+  assert.equal(result.assistant_text, "EMPTY_PROMPT_OK", JSON.stringify(result));
+  assert.doesNotMatch(JSON.stringify(requestBody), /Aether|coding agent|workspace|Current working directory|tools/i);
+});
+
 test("Android custom provider AgentSession keeps finish_reason compatibility for a manual model", async (t) => {
   const server = createServer((request, response) => {
     request.resume();
