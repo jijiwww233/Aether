@@ -782,7 +782,7 @@ class PiKernelBridge(
         onSetupProgress: (PiCoreSetupUpdate) -> Unit,
     ) {
         onSetupProgress(PiCoreSetupUpdate(PiCoreSetupPhase.CheckingAlpine))
-        // Require explicit Alpine initialization; only restore missing bundled host files here.
+        // Require explicit Alpine initialization; only repair interrupted bundled installs here.
         var setup = alpineRuntime.inspectSetup()
         if (!setup.isReady) {
             val repairedSetup = alpineRuntime.repairIncompleteHostRuntime()
@@ -797,6 +797,20 @@ class PiKernelBridge(
                 )
             }
             setup = repairedSetup
+        }
+        if (!setup.isReady) {
+            val rebuiltSetup = alpineRuntime.repairIncompleteRootfs()
+            if (rebuiltSetup != setup) {
+                diagnosticLogger.event(
+                    category = "pi_bridge",
+                    event = "alpine_rootfs_rebuilt",
+                    details = mapOf(
+                        "is_ready" to rebuiltSetup.isReady,
+                        "detail" to rebuiltSetup.detail,
+                    ),
+                )
+            }
+            setup = rebuiltSetup
         }
         diagnosticLogger.event(
             category = "pi_bridge",
