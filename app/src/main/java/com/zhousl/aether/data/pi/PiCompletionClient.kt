@@ -30,7 +30,9 @@ class PiCompletionClient(
                     isReasoningModel = isReasoningModel,
                 ).toJson(),
             )
-            put("system_prompt", systemPrompt)
+            systemPrompt.trim().takeIf(String::isNotBlank)?.let { prompt ->
+                put("system_prompt", prompt)
+            }
             put("messages", messages.toPiJson())
             put("stream", stream)
             put("reasoning", if (disableReasoning) "off" else settings.toPiThinkingLevel())
